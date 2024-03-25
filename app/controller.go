@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -11,9 +12,28 @@ import (
 type Controller struct {
 	Peers map[string]string // map of peer IDs to URLs
 	Addrs []string
+	mu    sync.Mutex
 }
 
-func (ctrl Controller) HandleHealthRequest(c *gin.Context) {
+func (c *Controller) addPeer(peer Peer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, url := range c.Peers {
+		if url == peer.URL {
+			return
+		}
+	}
+	c.Peers[peer.ID] = peer.URL
+}
+
+func (c *Controller) getPeers() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Peers
+}
+
+func (ctrl *Controller) HandleHealthRequest(c *gin.Context) {
 
 	availableCompute, err := pkg.GetComputeAvailable()
 	if err != nil {
@@ -30,10 +50,10 @@ func (ctrl Controller) HandleHealthRequest(c *gin.Context) {
 		"message": "Healthy",
 		"data": gin.H{
 			"id":        "1234",
-			"addresses": []string{},
-			"peers":     ctrl.Peers,
-			"num_peers": len(ctrl.Peers),
-			"network":   "libp2p",
+			"addresses": ctrl.Addrs,
+			"peers":     ctrl.getPeers(),
+			"num_peers": len(ctrl.getPeers()),
+			"network":   "local",
 			"cpu":       availableCompute.FreeCPUCores,
 			"ram":       availableCompute.FreeRAM,
 			"total_cpu": availableCompute.TotalCPUCores,
@@ -51,7 +71,7 @@ type Peer struct {
 }
 
 // HandleRegisterPeer handles requests to register a new peer
-func (ctrl Controller) HandleRegisterPeer(c *gin.Context) {
+func (ctrl *Controller) HandleRegisterPeer(c *gin.Context) {
 	var peer Peer
 	if err := c.ShouldBindJSON(&peer); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -59,25 +79,28 @@ func (ctrl Controller) HandleRegisterPeer(c *gin.Context) {
 	}
 
 	// Add the peer to the list of peers
-	ctrl.Peers[peer.ID] = peer.URL
+	ctrl.addPeer(peer)
 
 	// Respond with success message
-	c.JSON(http.StatusOK, gin.H{"message": "Peer registered successfully"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Peer registered successfully",
+	})
 }
 
 // Job represents the job parameters sent by the user
 type Job struct {
-	Program   string   `json:"program"`
-	Arguments []string `json:"arguments"`
+	Program   string   `json:"program" binding:"required"`
+	Arguments []string `json:"arguments" binding:"required"`
 }
 
 type JobResponse struct {
-	Output []string `json:"output"`
-	PID    int      `json:"pid"`
+	Output []string `json:"output" binding:"required"`
+	PID    int      `json:"pid" binding:"required"`
 }
 
 // HandleJob handles requests to deploy a job/container
-func (ctrl Controller) HandleJob(c *gin.Context) {
+func (ctrl *Controller) HandleJob(c *gin.Context) {
 	var job Job
 	if err := c.ShouldBindJSON(&job); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -108,7 +131,7 @@ func (ctrl Controller) HandleJob(c *gin.Context) {
 	})
 }
 
-func (ctrl Controller) HandleJobRequest(c *gin.Context) {
+func (ctrl *Controller) HandleJobRequest(c *gin.Context) {
 	var job Job
 	if err := c.ShouldBindJSON(&job); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -122,7 +145,7 @@ func (ctrl Controller) HandleJobRequest(c *gin.Context) {
 	}
 
 	var selectedPeer Peer
-	for id, url := range ctrl.Peers {
+	for id, url := range ctrl.getPeers() {
 		selectedPeer = Peer{
 			ID:  id,
 			URL: url,
@@ -145,6 +168,7 @@ func (ctrl Controller) HandleJobRequest(c *gin.Context) {
 
 	// Respond with success message
 	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
 		"message": "Job deployed successfully",
 		"data": gin.H{
 			"output": response.Data.Output,
